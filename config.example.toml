@@ -1,0 +1,40 @@
+# hbwatch example config. Copy to ~/.config/hbwatch/config.toml and edit.
+
+[settings]
+handbrake_cli = "HandBrakeCLI"   # absolute path or a name on PATH
+extensions = ["mkv", "mp4", "mov", "avi", "m4v", "ts"]
+watch_mode = "poll"              # "poll" (required for NAS) | "native" (local disks)
+poll_interval_secs = 30          # how often poll mode scans the watch folders
+debounce_secs = 3                # quiet period before considering a new file
+stabilize_interval_secs = 2      # size-poll interval
+stabilize_checks = 2             # consecutive unchanged size reads required
+workers = 1                      # serial; 1 is recommended (encoding pins the CPU)
+min_output_bytes = 1_000_000     # smaller output is treated as a failed encode
+encode_timeout_secs = 0          # 0 = no timeout
+log_level = "info"
+state_file = "~/.config/hbwatch/queue-state.json"
+
+# Convention mode: a folder without an explicit preset_file uses
+# "<preset_dir>/<folder name>.json".
+preset_dir = "~/.config/hbwatch/presets"
+
+# ntfy.sh notifications. All three toggles are independent.
+[notifications]
+enabled = true
+server = "https://ntfy.sh"       # change to self-host
+topic = "hbwatch-CHANGE-ME"      # pick a private, hard-to-guess topic
+# token = "tk_xxx"               # optional Bearer token for protected topics
+on_failure = true
+on_item_complete = false
+on_queue_drain = true
+
+# One [[folder]] block per watched directory.
+# Keep output_dir and originals_dir OUTSIDE every watch_dir.
+[[folder]]
+name = "movies"
+watch_dir = "/Volumes/NAS/Media/Inbox/Movies"      # Linux: /mnt/nas/Media/Inbox/Movies
+output_dir = "/Volumes/NAS/Media/Encoded/Movies"
+originals_dir = "/Volumes/NAS/Media/Originals/Movies"
+output_extension = "mp4"
+# preset_file = "/path/to/explicit.json"           # overrides preset_dir convention
+# preset_name = "My 1080p H265"                    # pick a specific preset in the file

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Replace USERNAME, then install:
+       cp service/com.user.hbwatch.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.user.hbwatch.plist
+     Unload with: launchctl unload ~/Library/LaunchAgents/com.user.hbwatch.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.hbwatch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/hbwatch</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/Users/USERNAME/.config/hbwatch/config.toml</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/.config/hbwatch/hbwatch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/.config/hbwatch/hbwatch.err.log</string>
+</dict>
+</plist>

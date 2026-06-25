@@ -1,0 +1,23 @@
+[Unit]
+Description=hbwatch HandBrake auto-transcode watcher
+After=network-online.target remote-fs.target
+Wants=network-online.target
+# If the NAS is an fstab mount, ensure it is present first:
+# RequiresMountsFor=/mnt/nas
+
+[Service]
+ExecStart=/usr/local/bin/hbwatch run --config %h/.config/hbwatch/config.toml
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/.config/hbwatch/hbwatch.log
+StandardError=append:%h/.config/hbwatch/hbwatch.err.log
+
+[Install]
+WantedBy=default.target
+
+# Install as a user service (recommended on a 24/7 box):
+#   cp service/hbwatch.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hbwatch.service
+#   loginctl enable-linger "$USER"     # keep running with no active login session
+#   journalctl --user -u hbwatch -f
