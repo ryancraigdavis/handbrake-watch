@@ -56,7 +56,11 @@ async fn unique_dest(dir: &Path, src: &Path) -> PathBuf {
 }
 
 async fn disambiguate(dir: &Path, src: &Path) -> PathBuf {
-    let stem = src.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let stem = src
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let ext = src.extension().map(|e| e.to_string_lossy().into_owned());
     let mut i = 1u32;
     loop {
@@ -83,6 +87,9 @@ mod tests {
     #[test]
     fn temp_path_appends_suffix() {
         let out = PathBuf::from("/media/encoded/clip.mp4");
-        assert_eq!(temp_path(&out), PathBuf::from("/media/encoded/clip.mp4.hbtmp"));
+        assert_eq!(
+            temp_path(&out),
+            PathBuf::from("/media/encoded/clip.mp4.hbtmp")
+        );
     }
 }

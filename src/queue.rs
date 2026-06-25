@@ -1,6 +1,6 @@
 //! Persistent serial job queue with resume support.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -98,6 +98,21 @@ impl Queue {
         let mut state = self.state.lock().unwrap();
         state.in_flight = None;
         write_state(&self.path, &state);
+    }
+
+    /// Number of jobs waiting (excludes the in-flight job).
+    pub fn pending_len(&self) -> usize {
+        self.state.lock().unwrap().pending.len()
+    }
+
+    /// Pending job count per folder name.
+    pub fn pending_counts(&self) -> HashMap<String, usize> {
+        let state = self.state.lock().unwrap();
+        let mut counts = HashMap::new();
+        for job in &state.pending {
+            *counts.entry(job.folder_name.clone()).or_insert(0) += 1;
+        }
+        counts
     }
 }
 
