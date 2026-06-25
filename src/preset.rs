@@ -56,7 +56,11 @@ fn collect_leaves<'a>(nodes: &'a [PresetNode], out: &mut Vec<&'a PresetNode>) {
     }
 }
 
-fn select(leaves: Vec<&PresetNode>, override_name: Option<&str>, path: &Path) -> Result<PresetInfo> {
+fn select(
+    leaves: Vec<&PresetNode>,
+    override_name: Option<&str>,
+    path: &Path,
+) -> Result<PresetInfo> {
     let chosen = match override_name {
         Some(name) => find_named(&leaves, name)
             .with_context(|| format!("preset '{}' not found in {}", name, path.display()))?,

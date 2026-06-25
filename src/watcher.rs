@@ -63,7 +63,10 @@ fn forward(event: Event, index: usize, tx: &Sender<Candidate>) {
         return;
     }
     for path in event.paths {
-        let _ = tx.blocking_send(Candidate { path, folder: index });
+        let _ = tx.blocking_send(Candidate {
+            path,
+            folder: index,
+        });
     }
 }
 

@@ -71,6 +71,14 @@ hbwatch --config ~/.config/hbwatch/config.toml run     # start the daemon
 `check` prints the resolved plan — confirm each folder's resolved `-Z` preset
 name is what you expect before running for real.
 
+### Progress display
+
+When `run` is attached to a terminal, hbwatch shows live progress bars: an
+overall "batch X/Y" bar, a current-film bar with percent/ETA (folded across
+HandBrake's encode passes), and one line per watched folder (idle / N queued /
+encoding). When stdout is not a terminal (e.g. under launchd/systemd) it falls
+back to plain structured logs, so service logs stay clean.
+
 ## Run as a service
 
 - **macOS (launchd):** see `service/com.user.hbwatch.plist`.
@@ -97,6 +105,10 @@ preset parsing, serial queue with JSON persistence + resume, encode-to-temp +
 verified success, original-move with cross-device fallback, startup
 reconciliation scan, and ntfy notifications.
 
+Progress (Phase 2 partial): `--json` progress parsing and TTY-aware indicatif
+progress bars (overall + current film + per-folder), with `WorkDone` error
+checking folded into success detection.
+
 Not yet (later phases): capped retries + `failed/` dir, periodic re-scan,
-`status` subcommand, `--json` progress, parallel workers, `install`/`uninstall`
-subcommands, config hot-reload.
+`status` subcommand, parallel workers, `install`/`uninstall` subcommands,
+config hot-reload.

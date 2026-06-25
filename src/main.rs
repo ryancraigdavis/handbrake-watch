@@ -5,11 +5,13 @@ mod encoder;
 mod mover;
 mod notify_ntfy;
 mod preset;
+mod progress;
 mod queue;
 mod runtime;
 mod scan;
 mod watcher;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -19,7 +21,11 @@ use tracing_subscriber::EnvFilter;
 use config::ResolvedConfig;
 
 #[derive(Parser)]
-#[command(name = "hbwatch", version, about = "Folder-watching HandBrake auto-transcoder")]
+#[command(
+    name = "hbwatch",
+    version,
+    about = "Folder-watching HandBrake auto-transcoder"
+)]
 struct Cli {
     /// Path to the config file
     #[arg(long, short)]
@@ -84,8 +90,18 @@ fn print_plan(cfg: &ResolvedConfig) {
 }
 
 fn init_tracing(level: &str) {
-    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // On a TTY the indicatif bars own the screen, so keep logs quiet and on
+    // stderr to avoid fighting the bars; under a service, log normally.
+    let interactive = std::io::stdout().is_terminal();
+    let chosen = match interactive {
+        true => "warn",
+        false => level,
+    };
+    let filter = EnvFilter::try_new(chosen).unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 fn default_config_path() -> PathBuf {

@@ -219,7 +219,10 @@ fn resolve_notifications(mut n: Notifications) -> Result<Notifications> {
         n.server = default_server();
     }
     if n.enabled {
-        ensure!(!n.topic.trim().is_empty(), "notifications.enabled requires a topic");
+        ensure!(
+            !n.topic.trim().is_empty(),
+            "notifications.enabled requires a topic"
+        );
     }
     Ok(n)
 }
@@ -253,7 +256,9 @@ fn assert_outside(dir: &Path, watch_dirs: &[PathBuf], label: &str) -> Result<()>
 /// Expand a leading `~` to the user's home directory.
 fn expand(path: &str) -> PathBuf {
     let expanded = match path.strip_prefix("~/") {
-        Some(rest) => home().map(|h| h.join(rest)).unwrap_or_else(|| PathBuf::from(path)),
+        Some(rest) => home()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|| PathBuf::from(path)),
         None => PathBuf::from(path),
     };
     expanded
