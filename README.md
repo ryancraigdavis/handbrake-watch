@@ -105,10 +105,22 @@ preset parsing, serial queue with JSON persistence + resume, encode-to-temp +
 verified success, original-move with cross-device fallback, startup
 reconciliation scan, and ntfy notifications.
 
+Phase 1 (durability): capped retries with a delay between attempts, permanent
+failures moved to `<originals_dir>/_failed/` with a `.error.txt` sidecar, and a
+periodic reconciliation re-scan that also recovers from a NAS mount dropping and
+reconnecting.
+
 Progress (Phase 2 partial): `--json` progress parsing and TTY-aware indicatif
 progress bars (overall + current film + per-folder), with `WorkDone` error
 checking folded into success detection.
 
-Not yet (later phases): capped retries + `failed/` dir, periodic re-scan,
-`status` subcommand, parallel workers, `install`/`uninstall` subcommands,
-config hot-reload.
+Not yet (later phases): `status` subcommand, parallel workers,
+`install`/`uninstall` subcommands, config hot-reload.
+
+### Failure handling
+
+A failed encode is retried up to `max_attempts` times (waiting `retry_delay_secs`
+between tries, which rides out transient NAS blips). If it still fails, the
+original is moved to `<originals_dir>/_failed/` with a `.error.txt` explaining
+why, so it stops eating restarts, and a notification fires (if enabled). The
+`retry_after` timestamp is persisted, so retry state survives a restart.

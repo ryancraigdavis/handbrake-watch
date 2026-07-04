@@ -38,6 +38,12 @@ pub struct Settings {
     pub min_output_bytes: u64,
     #[serde(default)]
     pub encode_timeout_secs: u64,
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_retry_delay")]
+    pub retry_delay_secs: u64,
+    #[serde(default = "default_rescan_interval")]
+    pub rescan_interval_secs: u64,
     #[serde(default = "default_log_level")]
     pub log_level: String,
     #[serde(default = "default_state_file")]
@@ -107,6 +113,7 @@ pub struct ResolvedFolder {
     pub watch_dir: PathBuf,
     pub output_dir: PathBuf,
     pub originals_dir: PathBuf,
+    pub failed_dir: PathBuf,
     pub output_extension: String,
     pub preset_file: PathBuf,
     pub preset_name: String,
@@ -169,6 +176,7 @@ fn resolve_folder(
     let watch_dir = expand(&f.watch_dir);
     let output_dir = prepare_dir(&f.output_dir)?;
     let originals_dir = prepare_dir(&f.originals_dir)?;
+    let failed_dir = prepare_subdir(&originals_dir, "_failed")?;
     assert_outside(&output_dir, watch_dirs, "output_dir")?;
     assert_outside(&originals_dir, watch_dirs, "originals_dir")?;
     let preset_file = resolve_preset_file(f, settings)?;
@@ -179,6 +187,7 @@ fn resolve_folder(
         watch_dir,
         output_dir,
         originals_dir,
+        failed_dir,
         output_extension: f.output_extension.clone(),
         preset_file,
         preset_name: info.name,
@@ -230,11 +239,19 @@ fn resolve_notifications(mut n: Notifications) -> Result<Notifications> {
 fn clamp_settings(mut s: Settings) -> Settings {
     s.workers = s.workers.clamp(1, 5);
     s.stabilize_checks = s.stabilize_checks.max(1);
+    s.max_attempts = s.max_attempts.max(1);
     s
 }
 
 fn prepare_dir(raw: &str) -> Result<PathBuf> {
     let dir = expand(raw);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create directory: {}", dir.display()))?;
+    Ok(canonical(&dir))
+}
+
+fn prepare_subdir(parent: &Path, name: &str) -> Result<PathBuf> {
+    let dir = parent.join(name);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create directory: {}", dir.display()))?;
     Ok(canonical(&dir))
@@ -301,6 +318,15 @@ fn default_workers() -> u32 {
 }
 fn default_min_output() -> u64 {
     1_000_000
+}
+fn default_max_attempts() -> u32 {
+    3
+}
+fn default_retry_delay() -> u64 {
+    30
+}
+fn default_rescan_interval() -> u64 {
+    300
 }
 fn default_log_level() -> String {
     "info".to_string()

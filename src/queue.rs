@@ -26,8 +26,13 @@ pub struct Job {
     pub preset_name: String,
     pub output_path: PathBuf,
     pub originals_dir: PathBuf,
+    #[serde(default)]
+    pub failed_dir: PathBuf,
     pub status: JobStatus,
     pub attempts: u32,
+    /// Earliest epoch-second this job may run (set when scheduled for retry).
+    #[serde(default)]
+    pub retry_after: Option<u64>,
     pub enqueued_at: u64,
 }
 
@@ -153,8 +158,10 @@ pub fn new_job(folder: &crate::config::ResolvedFolder, input: PathBuf, output: P
         preset_name: folder.preset_name.clone(),
         output_path: output,
         originals_dir: folder.originals_dir.clone(),
+        failed_dir: folder.failed_dir.clone(),
         status: JobStatus::Pending,
         attempts: 0,
+        retry_after: None,
         enqueued_at: now_secs(),
     }
 }
