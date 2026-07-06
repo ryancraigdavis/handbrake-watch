@@ -26,6 +26,27 @@ pub async fn finalize(job: &Job, temp: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Move a permanently-failed input into `failed_dir` with an error sidecar.
+pub async fn move_to_failed(input: &Path, failed_dir: &Path, reason: &str) -> Result<PathBuf> {
+    let dest = unique_dest(failed_dir, input).await;
+    move_file(input, &dest)
+        .await
+        .context("failed to move input into failed dir")?;
+    write_sidecar(&dest, reason).await;
+    Ok(dest)
+}
+
+async fn write_sidecar(moved: &Path, reason: &str) {
+    let mut sidecar = OsString::from(moved.as_os_str());
+    sidecar.push(".error.txt");
+    let body = format!(
+        "hbwatch: encode failed after retries\nfile: {}\nreason: {}\n",
+        moved.display(),
+        reason
+    );
+    let _ = tokio::fs::write(PathBuf::from(sidecar), body).await;
+}
+
 /// Move a file, falling back to copy+remove across filesystems (NAS shares).
 async fn move_file(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
@@ -91,5 +112,29 @@ mod tests {
             temp_path(&out),
             PathBuf::from("/media/encoded/clip.mp4.hbtmp")
         );
+    }
+
+    #[tokio::test]
+    async fn move_to_failed_moves_file_and_writes_sidecar() {
+        let base = std::env::temp_dir().join(format!("hbwatch-failtest-{}", std::process::id()));
+        let src_dir = base.join("in");
+        let failed = base.join("failed");
+        tokio::fs::create_dir_all(&src_dir).await.unwrap();
+        let input = src_dir.join("bad.mkv");
+        tokio::fs::write(&input, b"data").await.unwrap();
+
+        let moved = move_to_failed(&input, &failed, "boom reason")
+            .await
+            .unwrap();
+
+        assert!(moved.exists(), "moved file should exist in failed dir");
+        assert!(!input.exists(), "original should be gone from source");
+        let mut sidecar = OsString::from(moved.as_os_str());
+        sidecar.push(".error.txt");
+        let body = tokio::fs::read_to_string(PathBuf::from(sidecar))
+            .await
+            .unwrap();
+        assert!(body.contains("boom reason"));
+        let _ = tokio::fs::remove_dir_all(&base).await;
     }
 }

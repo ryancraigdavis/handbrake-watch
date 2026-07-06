@@ -11,6 +11,9 @@ stabilize_checks = 2             # consecutive unchanged size reads required
 workers = 1                      # serial; 1 is recommended (encoding pins the CPU)
 min_output_bytes = 1_000_000     # smaller output is treated as a failed encode
 encode_timeout_secs = 0          # 0 = no timeout
+max_attempts = 3                 # encode tries before a file is moved to _failed/
+retry_delay_secs = 30            # wait between retries (rides out transient blips)
+rescan_interval_secs = 300       # re-walk watch folders periodically (0 = off)
 log_level = "info"
 state_file = "~/.config/hbwatch/queue-state.json"
 

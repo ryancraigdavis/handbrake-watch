@@ -19,6 +19,8 @@ pub trait Reporter: Send + Sync {
     fn job_tick(&self, state: &str, fraction: f64, eta: Option<i64>, fps: Option<f64>);
     /// The current job finished.
     fn job_done(&self, ok: bool);
+    /// The current job was requeued for a retry (not counted toward the batch).
+    fn job_requeued(&self);
     /// The queue drained; nothing is encoding.
     fn batch_idle(&self);
     /// A general user-facing message.
@@ -51,6 +53,7 @@ impl Reporter for LogReporter {
     fn job_done(&self, ok: bool) {
         info!(ok, "job finished");
     }
+    fn job_requeued(&self) {}
     fn batch_idle(&self) {}
     fn note(&self, msg: &str) {
         info!("{msg}");
@@ -90,6 +93,13 @@ impl TtyReporter {
             state,
         }
     }
+
+    fn clear_current(&self) {
+        idle_current(&self.current);
+        let mut state = self.state.lock().unwrap();
+        state.folder = None;
+        state.film = None;
+    }
 }
 
 const PROGRESS_SCALE: u64 = 1000;
@@ -118,10 +128,12 @@ impl Reporter for TtyReporter {
 
     fn job_done(&self, ok: bool) {
         self.overall.inc(1);
-        let mut state = self.state.lock().unwrap();
-        state.folder = None;
-        state.film = None;
+        self.clear_current();
         let _ = ok;
+    }
+
+    fn job_requeued(&self) {
+        self.clear_current();
     }
 
     fn batch_idle(&self) {
