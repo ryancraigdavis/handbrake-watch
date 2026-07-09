@@ -8,7 +8,7 @@ poll_interval_secs = 30          # how often poll mode scans the watch folders
 debounce_secs = 3                # quiet period before considering a new file
 stabilize_interval_secs = 2      # size-poll interval
 stabilize_checks = 2             # consecutive unchanged size reads required
-workers = 1                      # serial; 1 is recommended (encoding pins the CPU)
+workers = 1                      # NOT IMPLEMENTED — encodes always run serially
 min_output_bytes = 1_000_000     # smaller output is treated as a failed encode
 encode_timeout_secs = 0          # 0 = no timeout
 max_attempts = 3                 # encode tries before a file is moved to _failed/

@@ -2,6 +2,13 @@
 name = "hbwatch"
 version = "0.1.0"
 edition = "2021"
+description = "Watch folders and auto-transcode new media files with HandBrakeCLI, moving originals aside. Requires HandBrakeCLI to be installed."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ryancraigdavis/handbrake-watch"
+readme = "README.md"
+keywords = ["handbrake", "transcode", "video", "encoding", "watcher"]
+categories = ["command-line-utilities", "multimedia::video"]
+exclude = ["handbrake-watcher-build-plan.md", "CLAUDE.md", ".claude/"]
 
 [dependencies]
 anyhow = "1"

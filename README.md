@@ -36,12 +36,23 @@ sudo apt install handbrake-cli
 HandBrakeCLI --version
 ```
 
-## Build
+## Install
+
+From a clone (puts `hbwatch` on your PATH at `~/.cargo/bin`):
+
+```bash
+cargo install --path .
+```
+
+Or build it and place it yourself:
 
 ```bash
 cargo build --release
-# binary at target/release/hbwatch
+sudo cp target/release/hbwatch /usr/local/bin/
 ```
+
+hbwatch shells out to `HandBrakeCLI` at runtime, so install that separately
+(see Prerequisites above). Verify with `hbwatch --version`.
 
 ## Configure
 
@@ -110,10 +121,28 @@ hbwatch install     # launchd on macOS, systemd --user on Linux
 hbwatch uninstall
 ```
 
-Ensure the NAS is mounted before the service starts. On Linux, run
-`loginctl enable-linger "$USER"` (the install output reminds you) so the user
-service survives logout. The templates in `service/` are also available if you
-prefer to install by hand.
+On Linux, run `loginctl enable-linger "$USER"` (the install output reminds you)
+so the user service survives logout. The templates in `service/` are also
+available if you prefer to install by hand.
+
+### Running against a NAS
+
+Two things matter:
+
+**Use `watch_mode = "poll"`.** Native filesystem events (FSEvents on macOS,
+inotify on Linux) are unreliable-to-nonexistent over SMB/NFS — they often never
+fire for changes on a network share. Poll mode stats the folders on
+`poll_interval_secs` instead. Only use `"native"` when the watch folders are on
+a local disk.
+
+**Mount timing is handled.** hbwatch refuses to start if a `watch_dir` doesn't
+exist — which is exactly the case when the share isn't mounted yet. That's
+deliberate: it will *not* create your `output_dir`/`originals_dir` on an empty
+mountpoint and quietly encode to the local boot disk. Because both service
+managers restart it (`KeepAlive` on launchd, `Restart=always` on systemd), it
+retries until the share appears and then runs normally. On systemd you can also
+add `RequiresMountsFor=/mnt/nas` to the unit. Once running, a mount that drops
+and comes back is picked up by the periodic re-scan.
 
 ## Notifications (ntfy.sh)
 
@@ -153,3 +182,12 @@ between tries, which rides out transient NAS blips). If it still fails, the
 original is moved to `<originals_dir>/_failed/` with a `.error.txt` explaining
 why, so it stops eating restarts, and a notification fires (if enabled). The
 `retry_after` timestamp is persisted, so retry state survives a restart.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.

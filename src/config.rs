@@ -264,6 +264,12 @@ fn resolve_notifications(mut n: Notifications) -> Result<Notifications> {
 }
 
 fn clamp_settings(mut s: Settings) -> Settings {
+    if s.workers > 1 {
+        warn!(
+            workers = s.workers,
+            "parallel workers are not implemented; encoding serially"
+        );
+    }
     s.workers = s.workers.clamp(1, 5);
     s.stabilize_checks = s.stabilize_checks.max(1);
     s.max_attempts = s.max_attempts.max(1);
