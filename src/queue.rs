@@ -119,6 +119,19 @@ impl Queue {
         }
         counts
     }
+
+    /// The in-flight job's (folder, filename), if any — for offline status reads.
+    pub fn in_flight_name(&self) -> Option<(String, String)> {
+        let state = self.state.lock().unwrap();
+        state.in_flight.as_ref().map(|job| {
+            let file = job
+                .input_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (job.folder_name.clone(), file)
+        })
+    }
 }
 
 fn read_state(path: &Path) -> Option<QueueState> {

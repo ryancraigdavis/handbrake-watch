@@ -27,13 +27,41 @@ pub trait Reporter: Send + Sync {
     fn note(&self, msg: &str);
 }
 
-/// Pick a reporter based on whether stdout is an interactive terminal.
+/// Pick the display reporter based on whether stdout is an interactive terminal.
 pub fn make_reporter(cfg: &ResolvedConfig, queue: Arc<Queue>) -> Arc<dyn Reporter> {
     let reporter: Arc<dyn Reporter> = match std::io::stdout().is_terminal() {
         true => Arc::new(TtyReporter::new(cfg, queue)),
         false => Arc::new(LogReporter),
     };
     reporter
+}
+
+/// Forward every event to several reporters (e.g. display + status store).
+pub struct Fanout(pub Vec<Arc<dyn Reporter>>);
+
+impl Reporter for Fanout {
+    fn job_start(&self, film: &str, folder: &str, completed: u64, pending: usize) {
+        self.0
+            .iter()
+            .for_each(|r| r.job_start(film, folder, completed, pending));
+    }
+    fn job_tick(&self, state: &str, fraction: f64, eta: Option<i64>, fps: Option<f64>) {
+        self.0
+            .iter()
+            .for_each(|r| r.job_tick(state, fraction, eta, fps));
+    }
+    fn job_done(&self, ok: bool) {
+        self.0.iter().for_each(|r| r.job_done(ok));
+    }
+    fn job_requeued(&self) {
+        self.0.iter().for_each(|r| r.job_requeued());
+    }
+    fn batch_idle(&self) {
+        self.0.iter().for_each(|r| r.batch_idle());
+    }
+    fn note(&self, msg: &str) {
+        self.0.iter().for_each(|r| r.note(msg));
+    }
 }
 
 /// Plain logging reporter for headless/service use.

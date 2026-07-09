@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<title>hbwatch</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #191c22; --line: #2a2f3a;
+    --fg: #e6e9ef; --dim: #9aa3b2; --accent: #4ea1ff; --ok: #46d17f; --bad: #ff6b6b;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f4f6fa; --card:#fff; --line:#e2e6ee; --fg:#1a1d24; --dim:#5a6472; --accent:#2563eb; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  .dim { color: var(--dim); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 14px; }
+  .film { font-size: 17px; font-weight: 600; word-break: break-word; }
+  .sub { color: var(--dim); font-size: 13px; margin-top: 2px; }
+  .bar { height: 12px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 12px; }
+  .fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .5s ease; }
+  .pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; text-align: center; }
+  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  .folder { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .folder:first-child { border-top: 0; }
+  .pill { font-size: 12px; color: var(--dim); }
+  .enc { color: var(--ok); }
+  .idle-note { color: var(--dim); text-align: center; padding: 20px 0; }
+  .offline { color: var(--bad); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); margin: 0 0 8px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>hbwatch</h1>
+    <span class="dim" id="uptime">—</span>
+  </header>
+
+  <div class="card" id="current-card">
+    <div class="idle-note" id="idle">connecting…</div>
+    <div id="active" style="display:none">
+      <div class="film" id="film"></div>
+      <div class="sub" id="film-sub"></div>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n" id="s-pending">–</div><div class="l">Queued</div></div>
+    <div class="stat"><div class="n" id="s-done">–</div><div class="l">Done</div></div>
+    <div class="stat"><div class="n bad" id="s-failed">–</div><div class="l">Failed</div></div>
+    <div class="stat"><div class="n pct" id="s-pct">–</div><div class="l">Current</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Folders</h2>
+    <div id="folders"></div>
+  </div>
+
+<script>
+  const token = new URLSearchParams(location.search).get("token");
+  const url = "status.json" + (token ? "?token=" + encodeURIComponent(token) : "");
+  const $ = (id) => document.getElementById(id);
+
+  function fmtDur(s) {
+    s = Math.max(0, s|0);
+    const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+    if (d) return `${d}d ${h}h`;
+    if (h) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+  function fmtEta(s) { return s && s > 0 ? `${Math.floor(s/60)}m${String(s%60).padStart(2,"0")}s` : "—"; }
+
+  async function tick() {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(r.status);
+      render(await r.json());
+    } catch (e) {
+      $("idle").textContent = "daemon offline";
+      $("idle").className = "idle-note offline";
+      $("idle").style.display = "";
+      $("active").style.display = "none";
+    }
+  }
+
+  function render(d) {
+    $("uptime").textContent = "up " + fmtDur(d.uptime_secs);
+    $("s-pending").textContent = d.pending_total;
+    $("s-done").textContent = d.processed;
+    $("s-failed").textContent = d.failed;
+
+    if (d.current) {
+      const c = d.current, pct = Math.round(c.fraction * 100);
+      $("idle").style.display = "none";
+      $("active").style.display = "";
+      $("film").textContent = c.film;
+      const fps = c.fps ? ` · ${c.fps.toFixed(1)} fps` : "";
+      $("film-sub").textContent = `${c.folder} · ${c.state.toLowerCase()} · ETA ${fmtEta(c.eta_secs)}${fps}`;
+      $("fill").style.width = pct + "%";
+      $("s-pct").textContent = pct + "%";
+    } else {
+      $("idle").textContent = "idle — waiting for files";
+      $("idle").className = "idle-note";
+      $("idle").style.display = "";
+      $("active").style.display = "none";
+      $("s-pct").textContent = "—";
+    }
+
+    $("folders").innerHTML = d.folders.map(f => `
+      <div class="folder">
+        <span>${f.name}</span>
+        <span class="pill ${f.encoding ? "enc" : ""}">${
+          f.encoding ? "encoding" : (f.pending ? f.pending + " queued" : "idle")
+        }</span>
+      </div>`).join("") || '<div class="dim">no folders</div>';
+  }
+
+  tick();
+  setInterval(tick, 2000);
+</script>
+</body>
+</html>

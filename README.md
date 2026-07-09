@@ -79,15 +79,41 @@ HandBrake's encode passes), and one line per watched folder (idle / N queued /
 encoding). When stdout is not a terminal (e.g. under launchd/systemd) it falls
 back to plain structured logs, so service logs stay clean.
 
+## Status from your phone
+
+Enable the built-in status server in `[server]`, bind it to your LAN
+(`bind = "0.0.0.0"`), set a `token`, and open it on your phone:
+
+```
+http://<mini-ip>:9000/?token=your-secret
+```
+
+You get a live, auto-refreshing page: current film + progress/ETA, queue depth,
+and per-folder status. **Do not expose the port to the internet** — bind it to
+your LAN and reach it over your home VPN when you're away. It also serves
+`/status.json` (machine-readable) and `/metrics` (Prometheus format, if you ever
+want Grafana graphs/alerting).
+
+From a terminal:
+
+```bash
+hbwatch status    # queries the running daemon; falls back to the queue file if offline
+```
+
 ## Run as a service
 
-- **macOS (launchd):** see `service/com.user.hbwatch.plist`.
-- **Ubuntu (systemd):** see `service/hbwatch.service`.
+Install the service for your OS (writes the unit with real paths and prints the
+enable steps):
 
-Both files contain install instructions in comments. Ensure the NAS is mounted
-before the service starts (the systemd unit shows how with
-`RequiresMountsFor`). On a Linux box, enable `loginctl enable-linger` so a
-user service survives logout.
+```bash
+hbwatch install     # launchd on macOS, systemd --user on Linux
+hbwatch uninstall
+```
+
+Ensure the NAS is mounted before the service starts. On Linux, run
+`loginctl enable-linger "$USER"` (the install output reminds you) so the user
+service survives logout. The templates in `service/` are also available if you
+prefer to install by hand.
 
 ## Notifications (ntfy.sh)
 
@@ -114,8 +140,11 @@ Progress (Phase 2 partial): `--json` progress parsing and TTY-aware indicatif
 progress bars (overall + current film + per-folder), with `WorkDone` error
 checking folded into success detection.
 
-Not yet (later phases): `status` subcommand, parallel workers,
-`install`/`uninstall` subcommands, config hot-reload.
+Phase 3 (remote visibility + deployment): an optional embedded status server
+(live phone dashboard + `/status.json` + Prometheus `/metrics`), a `status`
+subcommand, and `install`/`uninstall` for the launchd/systemd service.
+
+Not yet (later phases): parallel workers, config hot-reload.
 
 ### Failure handling
 

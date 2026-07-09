@@ -85,6 +85,29 @@ impl Default for Notifications {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct Server {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_bind(),
+            port: default_port(),
+            token: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Folder {
     pub name: String,
     pub watch_dir: String,
@@ -102,6 +125,8 @@ pub struct Config {
     pub settings: Settings,
     #[serde(default)]
     pub notifications: Notifications,
+    #[serde(default)]
+    pub server: Server,
     #[serde(rename = "folder", default)]
     pub folders: Vec<Folder>,
 }
@@ -123,6 +148,7 @@ pub struct ResolvedFolder {
 pub struct ResolvedConfig {
     pub settings: Settings,
     pub notifications: Notifications,
+    pub server: Server,
     pub folders: Vec<ResolvedFolder>,
     pub state_file: PathBuf,
 }
@@ -150,6 +176,7 @@ pub fn resolve(raw: Config) -> Result<ResolvedConfig> {
     Ok(ResolvedConfig {
         settings,
         notifications,
+        server: raw.server,
         folders,
         state_file,
     })
@@ -336,6 +363,12 @@ fn default_state_file() -> String {
 }
 fn default_server() -> String {
     "https://ntfy.sh".to_string()
+}
+fn default_bind() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_port() -> u16 {
+    9000
 }
 
 #[cfg(test)]

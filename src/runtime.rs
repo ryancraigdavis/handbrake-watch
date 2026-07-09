@@ -13,10 +13,11 @@ use tracing::{info, warn};
 
 use crate::config::{ResolvedConfig, ResolvedFolder};
 use crate::notify_ntfy::Notifier;
-use crate::progress::{self, Reporter};
+use crate::progress::{self, Fanout, Reporter};
 use crate::queue::{self, Job, JobStatus, Queue};
+use crate::status::StatusStore;
 use crate::watcher::{self, Candidate};
-use crate::{encoder, mover, scan};
+use crate::{encoder, mover, scan, server};
 
 type Tracked = Arc<Mutex<HashSet<PathBuf>>>;
 
@@ -27,7 +28,12 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
     let tracked: Tracked = Arc::new(Mutex::new(HashSet::new()));
     queue.resume(&tracked);
 
-    let reporter = progress::make_reporter(&cfg, queue.clone());
+    let display = progress::make_reporter(&cfg, queue.clone());
+    let store = Arc::new(StatusStore::new(queue::now_secs()));
+    let reporter: Arc<dyn Reporter> = Arc::new(Fanout(vec![display, store.clone()]));
+    let folder_names = cfg.folders.iter().map(|f| f.name.clone()).collect();
+    server::spawn(&cfg.server, store, queue.clone(), folder_names).await?;
+
     let (tx, rx) = mpsc::channel::<Candidate>(1024);
     let _watchers = watcher::spawn_watchers(&cfg, tx.clone())?;
     scan::spawn_scan(cfg.clone(), tx.clone());

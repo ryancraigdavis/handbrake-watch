@@ -21,6 +21,15 @@ state_file = "~/.config/hbwatch/queue-state.json"
 # "<preset_dir>/<folder name>.json".
 preset_dir = "~/.config/hbwatch/presets"
 
+# Optional live status server: a dashboard for your phone, JSON, and metrics.
+# Bind it to your LAN and reach it over your home VPN — do NOT expose it to the
+# public internet.
+[server]
+enabled = false
+bind = "127.0.0.1"       # use "0.0.0.0" to reach it from your phone on the LAN/VPN
+port = 9000              # then open http://<mini-ip>:9000/?token=... on your phone
+# token = "pick-a-secret" # required on /status.json and /metrics if set
+
 # ntfy.sh notifications. All three toggles are independent.
 [notifications]
 enabled = true
