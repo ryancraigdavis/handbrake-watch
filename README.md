@@ -36,12 +36,23 @@ sudo apt install handbrake-cli
 HandBrakeCLI --version
 ```
 
-## Build
+## Install
+
+From a clone (puts `hbwatch` on your PATH at `~/.cargo/bin`):
+
+```bash
+cargo install --path .
+```
+
+Or build it and place it yourself:
 
 ```bash
 cargo build --release
-# binary at target/release/hbwatch
+sudo cp target/release/hbwatch /usr/local/bin/
 ```
+
+hbwatch shells out to `HandBrakeCLI` at runtime, so install that separately
+(see Prerequisites above). Verify with `hbwatch --version`.
 
 ## Configure
 
@@ -79,15 +90,59 @@ HandBrake's encode passes), and one line per watched folder (idle / N queued /
 encoding). When stdout is not a terminal (e.g. under launchd/systemd) it falls
 back to plain structured logs, so service logs stay clean.
 
+## Status from your phone
+
+Enable the built-in status server in `[server]`, bind it to your LAN
+(`bind = "0.0.0.0"`), set a `token`, and open it on your phone:
+
+```
+http://<mini-ip>:9000/?token=your-secret
+```
+
+You get a live, auto-refreshing page: current film + progress/ETA, queue depth,
+and per-folder status. **Do not expose the port to the internet** — bind it to
+your LAN and reach it over your home VPN when you're away. It also serves
+`/status.json` (machine-readable) and `/metrics` (Prometheus format, if you ever
+want Grafana graphs/alerting).
+
+From a terminal:
+
+```bash
+hbwatch status    # queries the running daemon; falls back to the queue file if offline
+```
+
 ## Run as a service
 
-- **macOS (launchd):** see `service/com.user.hbwatch.plist`.
-- **Ubuntu (systemd):** see `service/hbwatch.service`.
+Install the service for your OS (writes the unit with real paths and prints the
+enable steps):
 
-Both files contain install instructions in comments. Ensure the NAS is mounted
-before the service starts (the systemd unit shows how with
-`RequiresMountsFor`). On a Linux box, enable `loginctl enable-linger` so a
-user service survives logout.
+```bash
+hbwatch install     # launchd on macOS, systemd --user on Linux
+hbwatch uninstall
+```
+
+On Linux, run `loginctl enable-linger "$USER"` (the install output reminds you)
+so the user service survives logout. The templates in `service/` are also
+available if you prefer to install by hand.
+
+### Running against a NAS
+
+Two things matter:
+
+**Use `watch_mode = "poll"`.** Native filesystem events (FSEvents on macOS,
+inotify on Linux) are unreliable-to-nonexistent over SMB/NFS — they often never
+fire for changes on a network share. Poll mode stats the folders on
+`poll_interval_secs` instead. Only use `"native"` when the watch folders are on
+a local disk.
+
+**Mount timing is handled.** hbwatch refuses to start if a `watch_dir` doesn't
+exist — which is exactly the case when the share isn't mounted yet. That's
+deliberate: it will *not* create your `output_dir`/`originals_dir` on an empty
+mountpoint and quietly encode to the local boot disk. Because both service
+managers restart it (`KeepAlive` on launchd, `Restart=always` on systemd), it
+retries until the share appears and then runs normally. On systemd you can also
+add `RequiresMountsFor=/mnt/nas` to the unit. Once running, a mount that drops
+and comes back is picked up by the periodic re-scan.
 
 ## Notifications (ntfy.sh)
 
@@ -114,8 +169,11 @@ Progress (Phase 2 partial): `--json` progress parsing and TTY-aware indicatif
 progress bars (overall + current film + per-folder), with `WorkDone` error
 checking folded into success detection.
 
-Not yet (later phases): `status` subcommand, parallel workers,
-`install`/`uninstall` subcommands, config hot-reload.
+Phase 3 (remote visibility + deployment): an optional embedded status server
+(live phone dashboard + `/status.json` + Prometheus `/metrics`), a `status`
+subcommand, and `install`/`uninstall` for the launchd/systemd service.
+
+Not yet (later phases): parallel workers, config hot-reload.
 
 ### Failure handling
 
@@ -124,3 +182,12 @@ between tries, which rides out transient NAS blips). If it still fails, the
 original is moved to `<originals_dir>/_failed/` with a `.error.txt` explaining
 why, so it stops eating restarts, and a notification fires (if enabled). The
 `retry_after` timestamp is persisted, so retry state survives a restart.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.

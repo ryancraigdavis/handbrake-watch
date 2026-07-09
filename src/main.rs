@@ -9,6 +9,10 @@ mod progress;
 mod queue;
 mod runtime;
 mod scan;
+mod server;
+mod service;
+mod status;
+mod statuscmd;
 mod watcher;
 
 use std::io::IsTerminal;
@@ -40,6 +44,12 @@ enum Command {
     Run,
     /// Validate config, print the resolved plan, and exit
     Check,
+    /// Print what the running daemon is doing (or the queue file if offline)
+    Status,
+    /// Install the background service (launchd on macOS, systemd on Linux)
+    Install,
+    /// Remove the background service
+    Uninstall,
 }
 
 #[tokio::main]
@@ -49,16 +59,23 @@ async fn main() -> Result<()> {
     let raw = config::load(&config_path)?;
     init_tracing(&raw.settings.log_level);
     let resolved = config::resolve(raw)?;
-    dispatch(cli.command, resolved).await
+    dispatch(cli.command, resolved, &config_path).await
 }
 
-async fn dispatch(command: Option<Command>, cfg: ResolvedConfig) -> Result<()> {
+async fn dispatch(
+    command: Option<Command>,
+    cfg: ResolvedConfig,
+    config_path: &std::path::Path,
+) -> Result<()> {
     match command.unwrap_or(Command::Run) {
         Command::Run => runtime::run(cfg).await,
         Command::Check => {
             print_plan(&cfg);
             Ok(())
         }
+        Command::Status => statuscmd::run(&cfg).await,
+        Command::Install => service::install(config_path),
+        Command::Uninstall => service::uninstall(),
     }
 }
 
@@ -87,6 +104,16 @@ fn print_plan(cfg: &ResolvedConfig) {
         "  notifications: enabled={} failure={} item={} drain={}",
         n.enabled, n.on_failure, n.on_item_complete, n.on_queue_drain
     );
+    let s = &cfg.server;
+    match s.enabled {
+        true => println!(
+            "  status server:  http://{}:{}  (token: {})",
+            s.bind,
+            s.port,
+            if s.token.is_some() { "set" } else { "none" }
+        ),
+        false => println!("  status server:  disabled"),
+    }
 }
 
 fn init_tracing(level: &str) {
