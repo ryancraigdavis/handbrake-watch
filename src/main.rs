@@ -32,8 +32,8 @@ use config::ResolvedConfig;
     about = "Folder-watching HandBrake auto-transcoder"
 )]
 struct Cli {
-    /// Path to the config file
-    #[arg(long, short)]
+    /// Path to the config file (accepted before or after the subcommand)
+    #[arg(long, short, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
