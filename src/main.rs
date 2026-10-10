@@ -1,6 +1,7 @@
 //! hbwatch — folder-watching HandBrake auto-transcode daemon.
 
 mod config;
+mod control;
 mod encoder;
 mod mover;
 mod notify_ntfy;

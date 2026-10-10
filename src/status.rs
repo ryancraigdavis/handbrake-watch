@@ -27,6 +27,19 @@ pub struct StatusResponse {
     pub pending_total: usize,
     pub current: Option<Current>,
     pub folders: Vec<FolderStatus>,
+    /// Control state (defaults keep older daemons' JSON parseable).
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub stopped: bool,
+    #[serde(default = "default_throttle")]
+    pub throttle: String,
+    #[serde(default)]
+    pub encoder_pid: Option<u32>,
+}
+
+fn default_throttle() -> String {
+    "normal".to_string()
 }
 
 /// The job currently encoding, if any.
@@ -122,4 +135,18 @@ impl Reporter for StatusStore {
     }
 
     fn note(&self, _msg: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_status_json_without_control_fields_still_parses() {
+        let old = r#"{"uptime_secs":5,"processed":1,"failed":0,"pending_total":0,"current":null,"folders":[]}"#;
+        let parsed: StatusResponse = serde_json::from_str(old).unwrap();
+        assert!(!parsed.paused);
+        assert_eq!(parsed.throttle, "normal");
+        assert_eq!(parsed.encoder_pid, None);
+    }
 }

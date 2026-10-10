@@ -60,6 +60,14 @@ fn print_live(status: &StatusResponse) {
         "  queued {} · done {} · failed {}",
         status.pending_total, status.processed, status.failed
     );
+    if status.paused || status.throttle != "normal" {
+        println!(
+            "  control: {}{}throttle={}",
+            if status.paused { "paused " } else { "" },
+            if status.stopped { "(encoder frozen) " } else { "" },
+            status.throttle
+        );
+    }
     for folder in &status.folders {
         let state = match (folder.encoding, folder.pending) {
             (true, n) => format!("encoding ({n} queued)"),

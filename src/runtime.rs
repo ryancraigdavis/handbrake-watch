@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::config::{self, ResolvedConfig, ResolvedFolder};
+use crate::control::Control;
 use crate::notify_ntfy::Notifier;
 use crate::progress::{self, Fanout, Reporter};
 use crate::queue::{self, Job, JobStatus, Queue};
@@ -37,7 +38,15 @@ pub async fn run(cfg: ResolvedConfig, config_path: PathBuf) -> Result<()> {
     let reporter: Arc<dyn Reporter> = Arc::new(Fanout(vec![display, store.clone()]));
     let folder_names: FolderNames =
         Arc::new(Mutex::new(cfg.folders.iter().map(|f| f.name.clone()).collect()));
-    server::spawn(&cfg.server, store, queue.clone(), folder_names.clone()).await?;
+    let control = Arc::new(Control::new());
+    server::spawn(
+        &cfg.server,
+        store,
+        queue.clone(),
+        folder_names.clone(),
+        control.clone(),
+    )
+    .await?;
 
     let (tx, rx) = mpsc::channel::<Candidate>(1024);
     let watchers: Watchers = Arc::new(Mutex::new(watcher::spawn_watchers(&cfg, tx.clone())?));
@@ -67,7 +76,7 @@ pub async fn run(cfg: ResolvedConfig, config_path: PathBuf) -> Result<()> {
         "hbwatch started — watching {} folder(s)",
         cfg.folders.len()
     ));
-    worker_loop(cfg.clone(), queue, tracked, notifier, reporter, sd_rx).await;
+    worker_loop(cfg.clone(), queue, tracked, notifier, reporter, control, sd_rx).await;
     drop(watchers); // keep watchers alive until shutdown
     info!("hbwatch stopped");
     Ok(())
@@ -369,11 +378,15 @@ async fn worker_loop(
     tracked: Tracked,
     notifier: Notifier,
     reporter: Arc<dyn Reporter>,
+    control: Arc<Control>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut batch_count = 0u64;
     let mut batch_start: Option<Instant> = None;
     while !*shutdown.borrow() {
+        if !wait_while_paused(&control, &reporter, &mut shutdown).await {
+            break;
+        }
         match queue.take_next() {
             None => {
                 fire_drain_if_needed(&notifier, &reporter, &mut batch_count, &mut batch_start)
@@ -397,13 +410,14 @@ async fn worker_loop(
                     &tracked,
                     &notifier,
                     &reporter,
+                    &control,
                     job,
                     &mut shutdown,
                 )
                 .await
                 {
                     Outcome::Interrupted => break,
-                    Outcome::Retried => {}
+                    Outcome::Retried | Outcome::Skipped => {}
                     Outcome::Terminal => batch_count += 1,
                 }
             }
@@ -419,6 +433,32 @@ enum Outcome {
     Retried,
     /// Shutdown interrupted the encode; the job stays in-flight to resume.
     Interrupted,
+    /// Abandoned via the control API; the input was moved to `failed/`.
+    Skipped,
+}
+
+/// Block while the control gate is closed. Returns false if shutdown arrived first.
+async fn wait_while_paused(
+    control: &Control,
+    reporter: &Arc<dyn Reporter>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    let mut paused = control.paused_rx();
+    if !*paused.borrow_and_update() {
+        return true;
+    }
+    reporter.note("paused — not starting new encodes until resumed");
+    loop {
+        tokio::select! {
+            changed = paused.changed() => {
+                if changed.is_err() || !*paused.borrow_and_update() {
+                    reporter.note("resumed");
+                    return true;
+                }
+            }
+            _ = shutdown.changed() => return false,
+        }
+    }
 }
 
 /// Honor a job's `retry_after` delay, aborting early on shutdown.
@@ -455,18 +495,42 @@ async fn run_one(
     tracked: &Tracked,
     notifier: &Notifier,
     reporter: &Arc<dyn Reporter>,
+    control: &Control,
     job: Job,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Outcome {
     tokio::select! {
-        result = process_job(cfg, &job, reporter) => {
+        result = process_job(cfg, &job, reporter, control) => {
             finish(cfg, queue, tracked, notifier, reporter, job, result).await
+        }
+        _ = control.skip.notified() => {
+            // Dropping the encode future kills HandBrakeCLI (kill_on_drop).
+            info!(job = %job.id, "skip requested; abandoning encode");
+            after_skip(queue, tracked, reporter, &job).await;
+            Outcome::Skipped
         }
         _ = shutdown.changed() => {
             info!(job = %job.id, "shutdown during encode; will resume on restart");
             Outcome::Interrupted
         }
     }
+}
+
+/// Clean up after a skipped job: clear in-flight, drop the temp file, and move the
+/// input to `failed/` so rescans don't re-queue it. Not counted as processed or failed.
+async fn after_skip(queue: &Queue, tracked: &Tracked, reporter: &Arc<dyn Reporter>, job: &Job) {
+    queue.complete();
+    let _ = tokio::fs::remove_file(mover::temp_path(&job.output_path)).await;
+    release(tracked, &job.input_path);
+    let name = file_name(&job.input_path);
+    match mover::move_to_failed(&job.input_path, &job.failed_dir, "skipped via control API").await {
+        Ok(dest) => reporter.note(&format!("skipped (moved to {}): {name}", dest.display())),
+        Err(e) => {
+            warn!(job = %job.id, error = %e, "could not move skipped input aside");
+            reporter.note(&format!("skipped: {name}"));
+        }
+    }
+    reporter.batch_idle();
 }
 
 /// Clear the in-flight job and route success vs. failure.
@@ -572,9 +636,14 @@ async fn fire_drain_if_needed(
     }
 }
 
-async fn process_job(cfg: &ResolvedConfig, job: &Job, reporter: &Arc<dyn Reporter>) -> Result<()> {
+async fn process_job(
+    cfg: &ResolvedConfig,
+    job: &Job,
+    reporter: &Arc<dyn Reporter>,
+    control: &Control,
+) -> Result<()> {
     let temp = mover::temp_path(&job.output_path);
-    let result = encode_and_move(cfg, job, &temp, reporter).await;
+    let result = encode_and_move(cfg, job, &temp, reporter, control).await;
     if result.is_err() {
         let _ = tokio::fs::remove_file(&temp).await;
     }
@@ -586,8 +655,9 @@ async fn encode_and_move(
     job: &Job,
     temp: &Path,
     reporter: &Arc<dyn Reporter>,
+    control: &Control,
 ) -> Result<()> {
-    encoder::run(&cfg.settings, job, temp, reporter).await?;
+    encoder::run(&cfg.settings, job, temp, reporter, control).await?;
     mover::finalize(job, temp).await?;
     Ok(())
 }

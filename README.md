@@ -131,6 +131,40 @@ From a terminal:
 hbwatch status    # queries the running daemon; falls back to the queue file if offline
 ```
 
+
+## Control API
+
+The same server exposes a small control API for automation (used by the
+`jarvis` agent on the same Mac). Every route takes the same token and returns
+the fresh `/status.json` body on success.
+
+```bash
+H="Authorization: Bearer your-secret"; U=http://127.0.0.1:9000
+curl -X POST -H "$H" $U/control/pause                                   # finish the current film, then wait
+curl -X POST -H "$H" $U/control/pause -d '{"stop_current": true}'       # also freeze HandBrakeCLI (SIGSTOP)
+curl -X POST -H "$H" $U/control/resume                                  # thaw + reopen the gate
+curl -X POST -H "$H" $U/control/skip                                    # abandon the current film (409 if idle)
+curl -X POST -H "$H" $U/control/throttle -d '{"level": "background"}'   # taskpolicy -b: efficiency cores
+curl -X POST -H "$H" $U/control/throttle -d '{"level": "normal"}'       # taskpolicy -B
+```
+
+- `/status.json` now also reports `paused`, `stopped`, `throttle` and
+  `encoder_pid`; `/metrics` adds `hbwatch_paused` and `hbwatch_throttled`.
+- **pause** closes a gate between jobs. Nothing is lost; the queue resumes
+  where it left off. With `stop_current` the running encoder is frozen too,
+  which keeps its progress but holds its memory. Note that
+  `encode_timeout_secs` keeps counting while frozen (the default `0` never
+  times out).
+- **skip** kills the running encode, deletes the `.hbtmp`, and moves the input
+  to `failed/` with a `.error.txt` note so rescans don't re-queue it. It is not
+  counted as processed or failed.
+- **throttle** `background` moves HandBrakeCLI to macOS background QoS. This
+  removes almost all memory-bandwidth contention with GPU work (an LLM, for
+  example) at the cost of a much slower encode. The level persists across jobs
+  until set back to `normal`. On Linux `taskpolicy` doesn't exist and the call
+  returns 500; `renice` is deliberately not used because it can't be undone
+  without root.
+
 ## Run as a service
 
 Install the service for your OS (writes the unit with real paths and prints the
