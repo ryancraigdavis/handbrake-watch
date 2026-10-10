@@ -68,7 +68,7 @@ async fn dispatch(
     config_path: &std::path::Path,
 ) -> Result<()> {
     match command.unwrap_or(Command::Run) {
-        Command::Run => runtime::run(cfg).await,
+        Command::Run => runtime::run(cfg, config_path.to_path_buf()).await,
         Command::Check => {
             print_plan(&cfg);
             Ok(())

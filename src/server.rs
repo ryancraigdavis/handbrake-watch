@@ -3,7 +3,7 @@
 //! Bind it to your LAN and reach it over your home VPN — do not expose it to
 //! the public internet. An optional token guards the data endpoints.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use axum::extract::{Query, State};
@@ -18,11 +18,15 @@ use crate::config::Server;
 use crate::queue::Queue;
 use crate::status::{FolderStatus, StatusResponse, StatusStore};
 
+/// Live list of watched folder names, shared so a runtime folder addition can
+/// append to it and have the dashboard reflect the new folder immediately.
+pub type FolderNames = Arc<Mutex<Vec<String>>>;
+
 #[derive(Clone)]
 struct AppState {
     store: Arc<StatusStore>,
     queue: Arc<Queue>,
-    folders: Vec<String>,
+    folders: FolderNames,
     token: Option<String>,
 }
 
@@ -36,7 +40,7 @@ pub async fn spawn(
     cfg: &Server,
     store: Arc<StatusStore>,
     queue: Arc<Queue>,
-    folders: Vec<String>,
+    folders: FolderNames,
 ) -> Result<()> {
     if !cfg.enabled {
         return Ok(());
@@ -79,8 +83,8 @@ fn build_status(state: &AppState) -> StatusResponse {
     let snapshot = state.store.snapshot();
     let counts = state.queue.pending_counts();
     let encoding_folder = snapshot.current.as_ref().map(|c| c.folder.clone());
-    let folders = state
-        .folders
+    let names = state.folders.lock().unwrap().clone();
+    let folders = names
         .iter()
         .map(|name| FolderStatus {
             name: name.clone(),

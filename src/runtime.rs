@@ -1,28 +1,32 @@
 //! Orchestration: wire watchers, scan, stabilizer, queue, and the worker.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::mpsc::{self, Receiver};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::config::{ResolvedConfig, ResolvedFolder};
+use crate::config::{self, ResolvedConfig, ResolvedFolder};
 use crate::notify_ntfy::Notifier;
 use crate::progress::{self, Fanout, Reporter};
 use crate::queue::{self, Job, JobStatus, Queue};
+use crate::server::FolderNames;
 use crate::status::StatusStore;
-use crate::watcher::{self, Candidate};
+use crate::watcher::{self, Candidate, WatcherHandle};
 use crate::{encoder, mover, scan, server};
+
+/// Watcher handles are kept alive here; runtime folder additions push new ones.
+type Watchers = Arc<Mutex<Vec<WatcherHandle>>>;
 
 type Tracked = Arc<Mutex<HashSet<PathBuf>>>;
 
 /// Start the daemon and run until a shutdown signal.
-pub async fn run(cfg: ResolvedConfig) -> Result<()> {
+pub async fn run(cfg: ResolvedConfig, config_path: PathBuf) -> Result<()> {
     let cfg = Arc::new(cfg);
     let queue = Arc::new(Queue::load(&cfg.state_file));
     let tracked: Tracked = Arc::new(Mutex::new(HashSet::new()));
@@ -31,11 +35,12 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
     let display = progress::make_reporter(&cfg, queue.clone());
     let store = Arc::new(StatusStore::new(queue::now_secs()));
     let reporter: Arc<dyn Reporter> = Arc::new(Fanout(vec![display, store.clone()]));
-    let folder_names = cfg.folders.iter().map(|f| f.name.clone()).collect();
-    server::spawn(&cfg.server, store, queue.clone(), folder_names).await?;
+    let folder_names: FolderNames =
+        Arc::new(Mutex::new(cfg.folders.iter().map(|f| f.name.clone()).collect()));
+    server::spawn(&cfg.server, store, queue.clone(), folder_names.clone()).await?;
 
     let (tx, rx) = mpsc::channel::<Candidate>(1024);
-    let _watchers = watcher::spawn_watchers(&cfg, tx.clone())?;
+    let watchers: Watchers = Arc::new(Mutex::new(watcher::spawn_watchers(&cfg, tx.clone())?));
     scan::spawn_scan(cfg.clone(), tx.clone());
     tokio::spawn(dispatch(
         cfg.clone(),
@@ -44,6 +49,15 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
         reporter.clone(),
         rx,
     ));
+
+    spawn_reload(
+        config_path,
+        cfg.clone(),
+        tx.clone(),
+        watchers.clone(),
+        folder_names,
+        reporter.clone(),
+    );
 
     let (sd_tx, sd_rx) = watch::channel(false);
     spawn_signal(sd_tx);
@@ -54,6 +68,7 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
         cfg.folders.len()
     ));
     worker_loop(cfg.clone(), queue, tracked, notifier, reporter, sd_rx).await;
+    drop(watchers); // keep watchers alive until shutdown
     info!("hbwatch stopped");
     Ok(())
 }
@@ -74,6 +89,138 @@ fn spawn_signal(tx: watch::Sender<bool>) {
         info!("shutdown signal received");
         let _ = tx.send(true);
     });
+}
+
+/// Reload config on SIGHUP. Newly-added `[[folder]]` blocks start watching and
+/// scanning live; changes to `[settings]`, `[server]`, `[notifications]`, or
+/// existing folders are reported as needing a restart. Append-only folder
+/// handling keeps every in-flight job and the queue order undisturbed.
+fn spawn_reload(
+    config_path: PathBuf,
+    baseline: Arc<ResolvedConfig>,
+    tx: Sender<Candidate>,
+    watchers: Watchers,
+    folder_names: FolderNames,
+    reporter: Arc<dyn Reporter>,
+) {
+    tokio::spawn(async move {
+        let mut hup = match signal(SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "failed to install SIGHUP handler; config reload disabled");
+                return;
+            }
+        };
+        let mut known: HashMap<String, Arc<ResolvedFolder>> = baseline
+            .folders
+            .iter()
+            .map(|f| (f.name.clone(), f.clone()))
+            .collect();
+        while hup.recv().await.is_some() {
+            reporter.note("SIGHUP — reloading config");
+            match config::load(&config_path).and_then(config::resolve) {
+                Ok(new_cfg) => apply_reload(
+                    &new_cfg,
+                    &baseline,
+                    &mut known,
+                    &tx,
+                    &watchers,
+                    &folder_names,
+                    &reporter,
+                ),
+                Err(e) => reporter.note(&format!(
+                    "reload failed: {e:#} — keeping current config"
+                )),
+            }
+        }
+    });
+}
+
+fn apply_reload(
+    new_cfg: &ResolvedConfig,
+    baseline: &ResolvedConfig,
+    known: &mut HashMap<String, Arc<ResolvedFolder>>,
+    tx: &Sender<Candidate>,
+    watchers: &Watchers,
+    folder_names: &FolderNames,
+    reporter: &Arc<dyn Reporter>,
+) {
+    if new_cfg.settings != baseline.settings {
+        reporter.note("note: [settings] changed — restart to apply (folders still hot-reload)");
+    }
+    if new_cfg.server != baseline.server {
+        reporter.note("note: [server] changed — restart to apply");
+    }
+    if new_cfg.notifications != baseline.notifications {
+        reporter.note("note: [notifications] changed — restart to apply");
+    }
+
+    let mut added = 0u32;
+    for folder in &new_cfg.folders {
+        match known.get(folder.name.as_str()) {
+            Some(existing) if existing.as_ref() != folder.as_ref() => {
+                reporter.note(&format!(
+                    "note: folder '{}' changed — restart to apply",
+                    folder.name
+                ));
+            }
+            Some(_) => {} // unchanged, already watched
+            None => {
+                if add_folder(folder, baseline, tx, watchers, folder_names, reporter) {
+                    known.insert(folder.name.clone(), folder.clone());
+                    added += 1;
+                }
+            }
+        }
+    }
+    for name in known.keys() {
+        if !new_cfg.folders.iter().any(|f| &f.name == name) {
+            reporter.note(&format!(
+                "note: folder '{name}' removed from config — restart to stop watching it"
+            ));
+        }
+    }
+    match added {
+        0 => reporter.note("reload: no new folders"),
+        n => reporter.note(&format!("reload: {n} folder(s) added")),
+    }
+}
+
+/// Start watching and scanning a folder added at runtime. Returns whether the
+/// watcher started (a failure, e.g. an unmounted watch_dir, is reported and skipped).
+fn add_folder(
+    folder: &Arc<ResolvedFolder>,
+    baseline: &ResolvedConfig,
+    tx: &Sender<Candidate>,
+    watchers: &Watchers,
+    folder_names: &FolderNames,
+    reporter: &Arc<dyn Reporter>,
+) -> bool {
+    match watcher::watch_folder(folder.clone(), &baseline.settings, tx.clone()) {
+        Ok(handle) => {
+            watchers.lock().unwrap().push(handle);
+            scan::spawn_folder_scan(
+                folder.clone(),
+                baseline.settings.rescan_interval_secs,
+                tx.clone(),
+            );
+            folder_names.lock().unwrap().push(folder.name.clone());
+            reporter.note(&format!(
+                "added folder '{}' — watching {} (-Z \"{}\")",
+                folder.name,
+                folder.watch_dir.display(),
+                folder.preset_name
+            ));
+            true
+        }
+        Err(e) => {
+            reporter.note(&format!(
+                "could not watch new folder '{}': {e:#}",
+                folder.name
+            ));
+            false
+        }
+    }
 }
 
 /// Consume candidate paths, dedupe, and spawn a stabilizer per new file.
@@ -111,15 +258,11 @@ fn release(tracked: &Tracked, path: &Path) {
 
 /// Filter out files we should never enqueue (wrong type, temp, already done).
 fn eligible(cfg: &ResolvedConfig, candidate: &Candidate) -> bool {
-    let folder = match cfg.folders.get(candidate.folder) {
-        Some(f) => f,
-        None => return false,
-    };
     let path = &candidate.path;
     path.is_file()
         && extension_allowed(cfg, path)
         && !is_ignored_name(path)
-        && !output_exists(folder, path)
+        && !output_exists(&candidate.folder, path)
 }
 
 fn extension_allowed(cfg: &ResolvedConfig, path: &Path) -> bool {
@@ -181,7 +324,7 @@ async fn stabilize(
         release(&tracked, &candidate.path);
         return;
     }
-    let folder = &cfg.folders[candidate.folder];
+    let folder = candidate.folder.as_ref();
     let output = output_path_for(folder, &candidate.path);
     let job = queue::new_job(folder, candidate.path.clone(), output);
     reporter.note(&format!(

@@ -82,6 +82,26 @@ hbwatch --config ~/.config/hbwatch/config.toml run     # start the daemon
 `check` prints the resolved plan — confirm each folder's resolved `-Z` preset
 name is what you expect before running for real.
 
+### Adding folders without a restart
+
+To add a new `[[folder]]` while the daemon is running, edit the config and send
+it `SIGHUP`:
+
+```bash
+hbwatch --config ~/.config/hbwatch/config.toml check   # confirm the new -Z name
+kill -HUP $(pgrep -f 'hbwatch run')                     # or, under launchd:
+launchctl kill HUP gui/$(id -u)/com.user.hbwatch
+```
+
+The reload picks up **newly-added folders only** — it starts watching them and
+scans their existing files into the queue immediately, leaving any in-flight
+encode and the queue order untouched. Changes to `[settings]`, `[server]`,
+`[notifications]`, or an *existing* folder are reported in the log as needing a
+restart, and are not applied on reload. A config that fails to parse or validate
+is rejected, and the running config is kept. All of this is logged (and shown on
+the dashboard's note feed), so watch the log after a reload to confirm what took
+effect.
+
 ### Progress display
 
 When `run` is attached to a terminal, hbwatch shows live progress bars: an
@@ -173,7 +193,12 @@ Phase 3 (remote visibility + deployment): an optional embedded status server
 (live phone dashboard + `/status.json` + Prometheus `/metrics`), a `status`
 subcommand, and `install`/`uninstall` for the launchd/systemd service.
 
-Not yet (later phases): parallel workers, config hot-reload.
+Phase 4 (live folder reload): adding a `[[folder]]` and sending `SIGHUP` starts
+watching and scanning it without a restart, without disturbing any in-flight
+encode. See "Adding folders without a restart" above.
+
+Not yet (later phases): parallel workers, hot-reload of `[settings]`/`[server]`/
+`[notifications]` (folder additions already reload live).
 
 ### Failure handling
 

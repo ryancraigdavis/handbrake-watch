@@ -5,7 +5,6 @@
 //! The scan is idempotent — the dispatcher dedups via the tracked-set and the
 //! output-exists guard — so re-running it is always safe.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,41 +12,51 @@ use tokio::sync::mpsc::Sender;
 use tracing::{info, warn};
 use walkdir::WalkDir;
 
-use crate::config::ResolvedConfig;
+use crate::config::{ResolvedConfig, ResolvedFolder};
 use crate::watcher::Candidate;
 
 /// Run one scan at startup, then repeat every `rescan_interval_secs` (0 = once).
 pub fn spawn_scan(cfg: Arc<ResolvedConfig>, tx: Sender<Candidate>) {
+    let interval = cfg.settings.rescan_interval_secs;
     tokio::spawn(async move {
-        scan_all(&cfg, &tx).await;
+        scan_all(&cfg.folders, &tx).await;
         info!("startup reconciliation scan complete");
-        run_periodic(cfg, tx).await;
+        run_periodic(cfg.folders.clone(), interval, tx).await;
     });
 }
 
-async fn run_periodic(cfg: Arc<ResolvedConfig>, tx: Sender<Candidate>) {
-    let interval = cfg.settings.rescan_interval_secs;
+/// Scan a single folder now and keep re-scanning it on the interval. Used when a
+/// folder is added at runtime, after the initial startup scan has already run.
+pub fn spawn_folder_scan(folder: Arc<ResolvedFolder>, interval: u64, tx: Sender<Candidate>) {
+    tokio::spawn(async move {
+        let set = [folder];
+        scan_all(&set, &tx).await;
+        run_periodic(set.to_vec(), interval, tx).await;
+    });
+}
+
+async fn run_periodic(folders: Vec<Arc<ResolvedFolder>>, interval: u64, tx: Sender<Candidate>) {
     if interval == 0 {
         return;
     }
     loop {
         tokio::time::sleep(Duration::from_secs(interval)).await;
-        scan_all(&cfg, &tx).await;
+        scan_all(&folders, &tx).await;
     }
 }
 
-async fn scan_all(cfg: &ResolvedConfig, tx: &Sender<Candidate>) {
-    for (index, folder) in cfg.folders.iter().enumerate() {
-        scan_folder(&folder.watch_dir, &folder.name, index, tx).await;
+async fn scan_all(folders: &[Arc<ResolvedFolder>], tx: &Sender<Candidate>) {
+    for folder in folders {
+        scan_folder(folder, tx).await;
     }
 }
 
-async fn scan_folder(dir: &Path, name: &str, index: usize, tx: &Sender<Candidate>) {
-    if !dir.is_dir() {
-        warn!(folder = name, path = %dir.display(), "watch_dir unavailable (mount down?)");
+async fn scan_folder(folder: &Arc<ResolvedFolder>, tx: &Sender<Candidate>) {
+    if !folder.watch_dir.is_dir() {
+        warn!(folder = %folder.name, path = %folder.watch_dir.display(), "watch_dir unavailable (mount down?)");
         return;
     }
-    let entries = WalkDir::new(dir)
+    let entries = WalkDir::new(&folder.watch_dir)
         .max_depth(1)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -55,7 +64,7 @@ async fn scan_folder(dir: &Path, name: &str, index: usize, tx: &Sender<Candidate
     for entry in entries {
         let candidate = Candidate {
             path: entry.path().to_path_buf(),
-            folder: index,
+            folder: folder.clone(),
         };
         let _ = tx.send(candidate).await;
     }

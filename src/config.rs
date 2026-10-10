@@ -1,6 +1,7 @@
 //! Config loading, path expansion, validation, and preset resolution.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
@@ -16,7 +17,7 @@ pub enum WatchMode {
     Native,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_handbrake")]
     pub handbrake_cli: String,
@@ -52,7 +53,7 @@ pub struct Settings {
     pub preset_dir: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Notifications {
     #[serde(default)]
     pub enabled: bool,
@@ -84,7 +85,7 @@ impl Default for Notifications {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Server {
     #[serde(default)]
     pub enabled: bool,
@@ -132,7 +133,7 @@ pub struct Config {
 }
 
 /// A folder with all paths expanded and its preset resolved.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedFolder {
     pub name: String,
     pub watch_dir: PathBuf,
@@ -149,7 +150,7 @@ pub struct ResolvedConfig {
     pub settings: Settings,
     pub notifications: Notifications,
     pub server: Server,
-    pub folders: Vec<ResolvedFolder>,
+    pub folders: Vec<Arc<ResolvedFolder>>,
     pub state_file: PathBuf,
 }
 
@@ -168,7 +169,7 @@ pub fn resolve(raw: Config) -> Result<ResolvedConfig> {
     let folders = raw
         .folders
         .iter()
-        .map(|f| resolve_folder(f, &raw.settings, &watch_dirs))
+        .map(|f| resolve_folder(f, &raw.settings, &watch_dirs).map(Arc::new))
         .collect::<Result<Vec<_>>>()?;
     let notifications = resolve_notifications(raw.notifications)?;
     let settings = clamp_settings(raw.settings);
