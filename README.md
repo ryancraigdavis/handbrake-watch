@@ -197,6 +197,19 @@ managers restart it (`KeepAlive` on launchd, `Restart=always` on systemd), it
 retries until the share appears and then runs normally. On systemd you can also
 add `RequiresMountsFor=/mnt/nas` to the unit.
 
+**macOS asks once per build for network-volume access.** A LaunchAgent is its
+own "responsible process" for privacy checks, so the first time a freshly built
+`hbwatch` touches `/Volumes/<share>` macOS shows "hbwatch would like to access
+files on a network volume" and blocks that read until you click Allow (the
+daemon looks hung: no log lines, nothing listening). `cargo install` produces an
+ad-hoc signature that changes every build, so expect the prompt again after
+each reinstall, on the Mac's own screen or Screen Sharing session. To make the
+grant stick across builds, sign with a stable self-signed Code Signing identity
+(Keychain Access → Certificate Assistant) and re-sign after each install:
+`codesign -fs hbwatch-dev ~/.cargo/bin/hbwatch`. If you ever click Don't
+Allow, re-enable it under System Settings → Privacy & Security → Files and
+Folders → hbwatch → Network Volumes.
+
 **A mount that drops mid-run pauses the queue.** Before each job the worker
 checks that the job's watch dir and output dir are still there; if either is
 missing it logs `mount unavailable — waiting for <dir>`, sets `mount_down` in
