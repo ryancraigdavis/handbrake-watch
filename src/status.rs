@@ -36,6 +36,9 @@ pub struct StatusResponse {
     pub throttle: String,
     #[serde(default)]
     pub encoder_pid: Option<u32>,
+    /// Encodes are on hold because a watch/output dir is unreachable.
+    #[serde(default)]
+    pub mount_down: bool,
 }
 
 fn default_throttle() -> String {
@@ -148,5 +151,6 @@ mod tests {
         assert!(!parsed.paused);
         assert_eq!(parsed.throttle, "normal");
         assert_eq!(parsed.encoder_pid, None);
+        assert!(!parsed.mount_down);
     }
 }

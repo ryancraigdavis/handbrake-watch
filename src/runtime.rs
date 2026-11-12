@@ -36,8 +36,9 @@ pub async fn run(cfg: ResolvedConfig, config_path: PathBuf) -> Result<()> {
     let display = progress::make_reporter(&cfg, queue.clone());
     let store = Arc::new(StatusStore::new(queue::now_secs()));
     let reporter: Arc<dyn Reporter> = Arc::new(Fanout(vec![display, store.clone()]));
-    let folder_names: FolderNames =
-        Arc::new(Mutex::new(cfg.folders.iter().map(|f| f.name.clone()).collect()));
+    let folder_names: FolderNames = Arc::new(Mutex::new(
+        cfg.folders.iter().map(|f| f.name.clone()).collect(),
+    ));
     let control = Arc::new(Control::new());
     server::spawn(
         &cfg.server,
@@ -76,7 +77,16 @@ pub async fn run(cfg: ResolvedConfig, config_path: PathBuf) -> Result<()> {
         "hbwatch started — watching {} folder(s)",
         cfg.folders.len()
     ));
-    worker_loop(cfg.clone(), queue, tracked, notifier, reporter, control, sd_rx).await;
+    worker_loop(
+        cfg.clone(),
+        queue,
+        tracked,
+        notifier,
+        reporter,
+        control,
+        sd_rx,
+    )
+    .await;
     drop(watchers); // keep watchers alive until shutdown
     info!("hbwatch stopped");
     Ok(())
@@ -137,9 +147,7 @@ fn spawn_reload(
                     &folder_names,
                     &reporter,
                 ),
-                Err(e) => reporter.note(&format!(
-                    "reload failed: {e:#} — keeping current config"
-                )),
+                Err(e) => reporter.note(&format!("reload failed: {e:#} — keeping current config")),
             }
         }
     });
@@ -397,6 +405,9 @@ async fn worker_loop(
                 if !wait_until_ready(&job, &reporter, &mut shutdown).await {
                     break;
                 }
+                if !wait_for_mount(&job, &reporter, &control, &cfg, &mut shutdown).await {
+                    break;
+                }
                 batch_start.get_or_insert_with(Instant::now);
                 reporter.job_start(
                     &file_name(&job.input_path),
@@ -457,6 +468,55 @@ async fn wait_while_paused(
                 }
             }
             _ = shutdown.changed() => return false,
+        }
+    }
+}
+
+/// Whether the job's watch dir and output dir are both reachable right now.
+/// Both live on the share, so either one vanishing means the mount is gone.
+fn mount_ok(job: &Job) -> bool {
+    dir_present(&job.input_path) && dir_present(&job.output_path)
+}
+
+fn dir_present(file: &Path) -> bool {
+    file.parent().is_some_and(Path::is_dir)
+}
+
+/// Hold the worker while the job's share is unreachable, polling until it
+/// returns. Never fails the job. Returns false on shutdown.
+async fn wait_for_mount(
+    job: &Job,
+    reporter: &Arc<dyn Reporter>,
+    control: &Control,
+    cfg: &ResolvedConfig,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    if mount_ok(job) {
+        return true;
+    }
+    let dir = job
+        .input_path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    warn!(job = %job.id, %dir, "mount unavailable; holding the queue");
+    reporter.note(&format!("mount unavailable — waiting for {dir}"));
+    control.set_mount_down(true);
+    let poll = Duration::from_secs(cfg.settings.mount_poll_secs.max(1));
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(poll) => {
+                if mount_ok(job) {
+                    control.set_mount_down(false);
+                    info!(job = %job.id, "mount back; resuming encodes");
+                    reporter.note("mount back — resuming encodes");
+                    return true;
+                }
+            }
+            _ = shutdown.changed() => {
+                control.set_mount_down(false);
+                return false;
+            }
         }
     }
 }
@@ -568,9 +628,25 @@ async fn handle_failure(
 ) -> Outcome {
     let attempts = job.attempts + 1;
     let max = cfg.settings.max_attempts;
-    warn!(job = %job.id, attempts, max, error = %error, "encode attempt failed");
-    match decide(attempts, max) {
+    match classify(mount_ok(&job), attempts, max) {
+        FailureAction::MountDown => {
+            // HandBrake dies instantly when the share vanishes; that is not a
+            // real attempt. Put the job back untouched and let the worker's
+            // mount gate hold the queue until the share returns.
+            warn!(job = %job.id, error = %error, "encode failed while mount is down; will retry when it returns");
+            let name = file_name(&job.input_path);
+            let mut retry = job;
+            retry.status = JobStatus::Pending;
+            retry.retry_after = None;
+            reporter.job_requeued();
+            reporter.note(&format!(
+                "mount lost during encode — {name} will retry when the share is back"
+            ));
+            queue.push(retry);
+            Outcome::Retried
+        }
         FailureAction::Retry => {
+            warn!(job = %job.id, attempts, max, error = %error, "encode attempt failed");
             let name = file_name(&job.input_path);
             let retry = retry_job(job, attempts, cfg.settings.retry_delay_secs);
             reporter.job_requeued();
@@ -579,6 +655,7 @@ async fn handle_failure(
             Outcome::Retried
         }
         FailureAction::GiveUp => {
+            warn!(job = %job.id, attempts, max, error = %error, "encode attempt failed");
             release(tracked, &job.input_path);
             reporter.job_done(false);
             give_up(&job, &error.to_string(), reporter).await;
@@ -596,9 +673,20 @@ fn decide(attempts: u32, max: u32) -> FailureAction {
     }
 }
 
+/// Route a failure: a missing mount is never counted against the job.
+fn classify(mount_ok: bool, attempts: u32, max: u32) -> FailureAction {
+    match mount_ok {
+        false => FailureAction::MountDown,
+        true => decide(attempts, max),
+    }
+}
+
+#[derive(Debug, PartialEq)]
 enum FailureAction {
     Retry,
     GiveUp,
+    /// The share is gone; requeue without counting an attempt.
+    MountDown,
 }
 
 fn retry_job(mut job: Job, attempts: u32, delay: u64) -> Job {
@@ -681,6 +769,43 @@ mod tests {
     #[test]
     fn max_attempts_one_never_retries() {
         assert!(!is_retry(1, 1));
+    }
+
+    #[test]
+    fn mount_loss_is_not_an_attempt() {
+        assert_eq!(classify(false, 1, 3), FailureAction::MountDown);
+        assert_eq!(classify(false, 3, 3), FailureAction::MountDown);
+        assert_eq!(classify(true, 1, 3), FailureAction::Retry);
+        assert_eq!(classify(true, 3, 3), FailureAction::GiveUp);
+    }
+
+    fn job_at(input: &Path, output: &Path) -> Job {
+        Job {
+            id: uuid::Uuid::new_v4(),
+            input_path: input.to_path_buf(),
+            folder_name: "f".into(),
+            preset_file: PathBuf::new(),
+            preset_name: "p".into(),
+            output_path: output.to_path_buf(),
+            originals_dir: PathBuf::new(),
+            failed_dir: PathBuf::new(),
+            status: JobStatus::Pending,
+            attempts: 0,
+            retry_after: None,
+            enqueued_at: 0,
+        }
+    }
+
+    #[test]
+    fn mount_ok_requires_both_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let present_in = tmp.path().join("in.mkv");
+        let present_out = tmp.path().join("out.mkv");
+        let gone_in = tmp.path().join("missing/in.mkv");
+        let gone_out = tmp.path().join("missing/out.mkv");
+        assert!(mount_ok(&job_at(&present_in, &present_out)));
+        assert!(!mount_ok(&job_at(&gone_in, &present_out)));
+        assert!(!mount_ok(&job_at(&present_in, &gone_out)));
     }
 
     #[test]

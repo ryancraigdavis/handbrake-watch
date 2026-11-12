@@ -74,7 +74,14 @@ pub async fn run(
     let stdout = child.stdout.take().context("missing HandBrake stdout")?;
     let stderr = child.stderr.take().context("missing HandBrake stderr")?;
     let stderr_task = tokio::spawn(drain(stderr));
-    let supervised = supervise(child, stdout, reporter, control, settings.encode_timeout_secs).await;
+    let supervised = supervise(
+        child,
+        stdout,
+        reporter,
+        control,
+        settings.encode_timeout_secs,
+    )
+    .await;
     control.set_pid(None);
     let (work_error, status) = supervised?;
     let stderr_text = stderr_task.await.unwrap_or_default();

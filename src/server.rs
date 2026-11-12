@@ -119,6 +119,7 @@ fn build_status(state: &AppState) -> StatusResponse {
         stopped: control.stopped,
         throttle: control.throttle.as_str().to_string(),
         encoder_pid: control.encoder_pid,
+        mount_down: control.mount_down,
     }
 }
 
@@ -143,7 +144,8 @@ fn parse_body<T: serde::de::DeserializeOwned + Default>(body: &Bytes) -> Result<
     if body.is_empty() {
         return Ok(T::default());
     }
-    serde_json::from_slice(body).map_err(|e| error_response(StatusCode::BAD_REQUEST, &e.to_string()))
+    serde_json::from_slice(body)
+        .map_err(|e| error_response(StatusCode::BAD_REQUEST, &e.to_string()))
 }
 
 fn error_response(code: StatusCode, msg: &str) -> Response {
@@ -268,7 +270,12 @@ fn render_metrics(status: &StatusResponse) -> String {
     out.push_str("# HELP hbwatch_paused Whether the queue gate is closed (0/1).\n");
     out.push_str(&format!("hbwatch_paused {}\n", status.paused as u8));
     out.push_str("# HELP hbwatch_throttled Whether the encoder runs at background QoS (0/1).\n");
-    out.push_str(&format!("hbwatch_throttled {}\n", (status.throttle == "background") as u8));
+    out.push_str(&format!(
+        "hbwatch_throttled {}\n",
+        (status.throttle == "background") as u8
+    ));
+    out.push_str("# HELP hbwatch_mount_down Whether encodes are held for a missing mount (0/1).\n");
+    out.push_str(&format!("hbwatch_mount_down {}\n", status.mount_down as u8));
     out
 }
 
@@ -306,6 +313,7 @@ mod tests {
             stopped: false,
             throttle: "normal".into(),
             encoder_pid: None,
+            mount_down: false,
         }
     }
 
@@ -320,7 +328,13 @@ mod tests {
         }
     }
 
-    async fn call(app: Router, method: &str, path: &str, auth: Option<&str>, body: &str) -> (StatusCode, serde_json::Value) {
+    async fn call(
+        app: Router,
+        method: &str,
+        path: &str,
+        auth: Option<&str>,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
         use axum::body::Body;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
@@ -329,7 +343,10 @@ mod tests {
         if let Some(a) = auth {
             req = req.header("authorization", a);
         }
-        let req = req.header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let req = req
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -342,20 +359,48 @@ mod tests {
         let state = test_state(Some("secret"));
         let (code, _) = call(router(state.clone()), "POST", "/control/pause", None, "").await;
         assert_eq!(code, StatusCode::UNAUTHORIZED);
-        let (code, _) = call(router(state), "POST", "/control/pause", Some("Bearer wrong"), "").await;
+        let (code, _) = call(
+            router(state),
+            "POST",
+            "/control/pause",
+            Some("Bearer wrong"),
+            "",
+        )
+        .await;
         assert_eq!(code, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn pause_then_status_reports_paused_and_resume_clears() {
         let state = test_state(Some("secret"));
-        let (code, body) = call(router(state.clone()), "POST", "/control/pause", Some("Bearer secret"), "").await;
+        let (code, body) = call(
+            router(state.clone()),
+            "POST",
+            "/control/pause",
+            Some("Bearer secret"),
+            "",
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(body["paused"], true);
-        let (_, body) = call(router(state.clone()), "GET", "/status.json?token=secret", None, "").await;
+        let (_, body) = call(
+            router(state.clone()),
+            "GET",
+            "/status.json?token=secret",
+            None,
+            "",
+        )
+        .await;
         assert_eq!(body["paused"], true);
         assert_eq!(body["throttle"], "normal");
-        let (code, body) = call(router(state), "POST", "/control/resume", Some("Bearer secret"), "").await;
+        let (code, body) = call(
+            router(state),
+            "POST",
+            "/control/resume",
+            Some("Bearer secret"),
+            "",
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(body["paused"], false);
     }
@@ -363,10 +408,24 @@ mod tests {
     #[tokio::test]
     async fn throttle_validates_level_and_persists_without_pid() {
         let state = test_state(None);
-        let (code, body) = call(router(state.clone()), "POST", "/control/throttle", None, r#"{"level":"fast"}"#).await;
+        let (code, body) = call(
+            router(state.clone()),
+            "POST",
+            "/control/throttle",
+            None,
+            r#"{"level":"fast"}"#,
+        )
+        .await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(body["error"].as_str().unwrap().contains("level"));
-        let (code, body) = call(router(state.clone()), "POST", "/control/throttle", None, r#"{"level":"background"}"#).await;
+        let (code, body) = call(
+            router(state.clone()),
+            "POST",
+            "/control/throttle",
+            None,
+            r#"{"level":"background"}"#,
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(body["throttle"], "background");
         assert_eq!(state.control.throttle(), ThrottleLevel::Background);

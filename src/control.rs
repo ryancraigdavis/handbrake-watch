@@ -41,6 +41,8 @@ pub struct ControlView {
     pub stopped: bool,
     pub throttle: ThrottleLevel,
     pub encoder_pid: Option<u32>,
+    /// The worker is holding the queue because a watch/output dir is unreachable.
+    pub mount_down: bool,
 }
 
 pub struct Control {
@@ -52,6 +54,7 @@ pub struct Control {
     encoder_pid: AtomicU32,
     stopped: AtomicBool,
     pending_apply: AtomicBool,
+    mount_down: AtomicBool,
     taskpolicy: PathBuf,
 }
 
@@ -75,6 +78,7 @@ impl Control {
             encoder_pid: AtomicU32::new(0),
             stopped: AtomicBool::new(false),
             pending_apply: AtomicBool::new(false),
+            mount_down: AtomicBool::new(false),
             taskpolicy: taskpolicy.into(),
         }
     }
@@ -168,10 +172,23 @@ impl Control {
         if let Some(pid) = self.pid() {
             let level = self.throttle();
             match apply(&self.taskpolicy, pid, level) {
-                Ok(()) => info!(pid, level = level.as_str(), "deferred encoder throttle applied"),
+                Ok(()) => info!(
+                    pid,
+                    level = level.as_str(),
+                    "deferred encoder throttle applied"
+                ),
                 Err(e) => warn!(pid, error = %e, "deferred throttle failed"),
             }
         }
+    }
+
+    /// Record whether the worker is waiting for a missing mount.
+    pub fn set_mount_down(&self, down: bool) {
+        self.mount_down.store(down, Ordering::SeqCst);
+    }
+
+    pub fn mount_down(&self) -> bool {
+        self.mount_down.load(Ordering::SeqCst)
     }
 
     pub fn view(&self) -> ControlView {
@@ -180,6 +197,7 @@ impl Control {
             stopped: self.stopped.load(Ordering::SeqCst),
             throttle: self.throttle(),
             encoder_pid: self.pid(),
+            mount_down: self.mount_down(),
         }
     }
 }
@@ -219,7 +237,10 @@ mod tests {
 
     #[test]
     fn throttle_level_serde_is_lowercase() {
-        assert_eq!(serde_json::to_string(&ThrottleLevel::Background).unwrap(), "\"background\"");
+        assert_eq!(
+            serde_json::to_string(&ThrottleLevel::Background).unwrap(),
+            "\"background\""
+        );
         let parsed: ThrottleLevel = serde_json::from_str("\"normal\"").unwrap();
         assert_eq!(parsed, ThrottleLevel::Normal);
         assert!(serde_json::from_str::<ThrottleLevel>("\"nice\"").is_err());
@@ -260,6 +281,11 @@ mod tests {
     fn apply_reports_taskpolicy_failure() {
         let err = apply(Path::new("/usr/bin/false"), 1, ThrottleLevel::Background).unwrap_err();
         assert!(err.to_string().contains("taskpolicy -b -p 1 failed"));
-        assert!(apply(Path::new("/nonexistent/taskpolicy"), 1, ThrottleLevel::Normal).is_err());
+        assert!(apply(
+            Path::new("/nonexistent/taskpolicy"),
+            1,
+            ThrottleLevel::Normal
+        )
+        .is_err());
     }
 }
