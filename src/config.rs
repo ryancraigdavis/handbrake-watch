@@ -45,6 +45,9 @@ pub struct Settings {
     pub retry_delay_secs: u64,
     #[serde(default = "default_rescan_interval")]
     pub rescan_interval_secs: u64,
+    /// How often to re-check a missing watch/output dir before resuming encodes.
+    #[serde(default = "default_mount_poll")]
+    pub mount_poll_secs: u64,
     #[serde(default = "default_log_level")]
     pub log_level: String,
     #[serde(default = "default_state_file")]
@@ -361,6 +364,9 @@ fn default_retry_delay() -> u64 {
 }
 fn default_rescan_interval() -> u64 {
     300
+}
+fn default_mount_poll() -> u64 {
+    15
 }
 fn default_log_level() -> String {
     "info".to_string()

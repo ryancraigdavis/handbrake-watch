@@ -12,6 +12,7 @@ use tokio::process::{Child, Command};
 use tracing::debug;
 
 use crate::config::Settings;
+use crate::control::Control;
 use crate::progress::Reporter;
 use crate::queue::Job;
 
@@ -65,14 +66,24 @@ pub async fn run(
     job: &Job,
     temp: &Path,
     reporter: &Arc<dyn Reporter>,
+    control: &Control,
 ) -> Result<()> {
     ensure_parent(&job.output_path).await;
     let mut child = spawn(settings, job, temp)?;
+    control.set_pid(child.id());
     let stdout = child.stdout.take().context("missing HandBrake stdout")?;
     let stderr = child.stderr.take().context("missing HandBrake stderr")?;
     let stderr_task = tokio::spawn(drain(stderr));
-    let (work_error, status) =
-        supervise(child, stdout, reporter, settings.encode_timeout_secs).await?;
+    let supervised = supervise(
+        child,
+        stdout,
+        reporter,
+        control,
+        settings.encode_timeout_secs,
+    )
+    .await;
+    control.set_pid(None);
+    let (work_error, status) = supervised?;
     let stderr_text = stderr_task.await.unwrap_or_default();
     debug!(folder = %job.folder_name, %stderr_text, "HandBrakeCLI finished");
     verify(settings, temp, status.success(), work_error, &stderr_text).await
@@ -103,10 +114,11 @@ async fn supervise(
     mut child: Child,
     stdout: tokio::process::ChildStdout,
     reporter: &Arc<dyn Reporter>,
+    control: &Control,
     timeout_secs: u64,
 ) -> Result<(Option<i32>, std::process::ExitStatus)> {
     let work = async {
-        let error = read_progress(stdout, reporter).await;
+        let error = read_progress(stdout, reporter, control).await;
         let status = child.wait().await?;
         Ok::<_, anyhow::Error>((error, status))
     };
@@ -123,6 +135,7 @@ async fn supervise(
 async fn read_progress(
     stdout: tokio::process::ChildStdout,
     reporter: &Arc<dyn Reporter>,
+    control: &Control,
 ) -> Option<i32> {
     let mut lines = BufReader::new(stdout).lines();
     let mut buffer = String::new();
@@ -135,6 +148,8 @@ async fn read_progress(
                 error = Some(code);
             }
             buffer.clear();
+            // Worker threads exist once progress flows; apply any deferred throttle now.
+            control.apply_pending();
         }
     }
     error

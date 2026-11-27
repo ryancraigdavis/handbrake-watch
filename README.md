@@ -131,6 +131,40 @@ From a terminal:
 hbwatch status    # queries the running daemon; falls back to the queue file if offline
 ```
 
+
+## Control API
+
+The same server exposes a small control API for automation (used by the
+`jarvis` agent on the same Mac). Every route takes the same token and returns
+the fresh `/status.json` body on success.
+
+```bash
+H="Authorization: Bearer your-secret"; U=http://127.0.0.1:9000
+curl -X POST -H "$H" $U/control/pause                                   # finish the current film, then wait
+curl -X POST -H "$H" $U/control/pause -d '{"stop_current": true}'       # also freeze HandBrakeCLI (SIGSTOP)
+curl -X POST -H "$H" $U/control/resume                                  # thaw + reopen the gate
+curl -X POST -H "$H" $U/control/skip                                    # abandon the current film (409 if idle)
+curl -X POST -H "$H" $U/control/throttle -d '{"level": "background"}'   # taskpolicy -b: efficiency cores
+curl -X POST -H "$H" $U/control/throttle -d '{"level": "normal"}'       # taskpolicy -B
+```
+
+- `/status.json` now also reports `paused`, `stopped`, `throttle` and
+  `encoder_pid`; `/metrics` adds `hbwatch_paused` and `hbwatch_throttled`.
+- **pause** closes a gate between jobs. Nothing is lost; the queue resumes
+  where it left off. With `stop_current` the running encoder is frozen too,
+  which keeps its progress but holds its memory. Note that
+  `encode_timeout_secs` keeps counting while frozen (the default `0` never
+  times out).
+- **skip** kills the running encode, deletes the `.hbtmp`, and moves the input
+  to `failed/` with a `.error.txt` note so rescans don't re-queue it. It is not
+  counted as processed or failed.
+- **throttle** `background` moves HandBrakeCLI to macOS background QoS. This
+  removes almost all memory-bandwidth contention with GPU work (an LLM, for
+  example) at the cost of a much slower encode. The level persists across jobs
+  until set back to `normal`. On Linux `taskpolicy` doesn't exist and the call
+  returns 500; `renice` is deliberately not used because it can't be undone
+  without root.
+
 ## Run as a service
 
 Install the service for your OS (writes the unit with real paths and prints the
@@ -161,8 +195,30 @@ deliberate: it will *not* create your `output_dir`/`originals_dir` on an empty
 mountpoint and quietly encode to the local boot disk. Because both service
 managers restart it (`KeepAlive` on launchd, `Restart=always` on systemd), it
 retries until the share appears and then runs normally. On systemd you can also
-add `RequiresMountsFor=/mnt/nas` to the unit. Once running, a mount that drops
-and comes back is picked up by the periodic re-scan.
+add `RequiresMountsFor=/mnt/nas` to the unit.
+
+**macOS asks once per build for network-volume access.** A LaunchAgent is its
+own "responsible process" for privacy checks, so the first time a freshly built
+`hbwatch` touches `/Volumes/<share>` macOS shows "hbwatch would like to access
+files on a network volume" and blocks that read until you click Allow (the
+daemon looks hung: no log lines, nothing listening). `cargo install` produces an
+ad-hoc signature that changes every build, so expect the prompt again after
+each reinstall, on the Mac's own screen or Screen Sharing session. To make the
+grant stick across builds, sign with a stable self-signed Code Signing identity
+(Keychain Access → Certificate Assistant) and re-sign after each install:
+`codesign -fs hbwatch-dev ~/.cargo/bin/hbwatch`. If you ever click Don't
+Allow, re-enable it under System Settings → Privacy & Security → Files and
+Folders → hbwatch → Network Volumes.
+
+**A mount that drops mid-run pauses the queue.** Before each job the worker
+checks that the job's watch dir and output dir are still there; if either is
+missing it logs `mount unavailable — waiting for <dir>`, sets `mount_down` in
+`/status.json` (and `hbwatch_mount_down` in `/metrics`), and re-checks every
+`mount_poll_secs` until the share is back. An encode that was running when the
+share vanished fails instantly, but that failure is not counted as an attempt
+and the file is not moved to `_failed/`: the job goes back on the queue
+untouched and resumes once the mount returns. The periodic re-scan then picks up
+anything the watchers missed.
 
 ## Notifications (ntfy.sh)
 
@@ -206,7 +262,9 @@ A failed encode is retried up to `max_attempts` times (waiting `retry_delay_secs
 between tries, which rides out transient NAS blips). If it still fails, the
 original is moved to `<originals_dir>/_failed/` with a `.error.txt` explaining
 why, so it stops eating restarts, and a notification fires (if enabled). The
-`retry_after` timestamp is persisted, so retry state survives a restart.
+`retry_after` timestamp is persisted, so retry state survives a restart. A
+failure while the share itself is unreachable is treated as a mount outage, not
+an attempt (see "Running against a NAS").
 
 ## License
 
